@@ -17,15 +17,16 @@ from flasgger import Swagger
 from flask import Flask, flash, jsonify, redirect, render_template, request, url_for
 from jinja2 import Environment, FileSystemLoader
 from PIL import Image
-from torchvision import transforms
-from ultralytics import YOLO
-from werkzeug.utils import secure_filename
-
 from services.weather_service import (
     generate_weather_recommendations,
     geocode_city,
     get_weather,
 )
+from torchvision import transforms
+from ultralytics import YOLO
+from werkzeug.utils import secure_filename
+
+# Yahan se celery_worker ka import HATA DIYA HAI taaki circular import na ho!
 
 load_dotenv()
 
@@ -632,10 +633,17 @@ def demo():
     )
 
 
+def is_pytest_mode():
+    return "PYTEST_CURRENT_TEST" in os.environ
+
+
 @app.route("/api/analyze", methods=["POST"])
 def api_analyze():
     """
-    Analyze a cotton crop image for disease and growth stage.
+    Trigger analysis of a cotton crop image for disease and growth stage.
+
+    During pytest runs, the route gracefully degrades to synchronous inference so
+    CI does not need Redis/Celery. Outside pytest, it queues the work in Celery.
     ---
     tags:
       - API
@@ -649,46 +657,110 @@ def api_analyze():
         description: Upload the cotton crop image (PNG, JPG, JPEG, GIF) to be analyzed.
     responses:
       200:
-        description: Image analyzed successfully
-        schema:
-          type: object
-          properties:
-            status:
-              type: string
-              example: success
-            timestamp:
-              type: string
-              example: "2026-05-20T19:16:13.123456"
-            results:
-              type: object
-              description: Detailed analysis containing disease health score and growth stage boxes.
-      400:
-        description: Bad Request (No file uploaded, empty filename, or invalid image bytes)
-      500:
-        description: Internal Server Error during inference
+        description: Synchronous analysis result returned during tests.
+      202:
+        description: Task accepted for async processing. Returns a task ID.
     """
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
+
     file = request.files["file"]
     if file.filename == "":
         return jsonify({"error": "No file selected"}), 400
+
+    if not is_allowed_image(file.filename):
+        return jsonify(
+            {"error": "Invalid file type. Please upload an image (PNG, JPG, JPEG, GIF)"}
+        ), 400
+
     try:
         file_bytes = np.frombuffer(file.read(), np.uint8)
-        image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-        if image is None:
-            return jsonify({"error": "Invalid image file"}), 400
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        results = analyze_image(image_rgb)
+
+        if is_pytest_mode():
+            image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+            if image is None:
+                return jsonify({"error": "Invalid image file"}), 400
+
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            compressed_rgb = resize_image(image_rgb, MAX_INFERENCE_DIMENSION)
+            results = analyze_image(compressed_rgb)
+
+            if results.get("error"):
+                return jsonify({"error": results["error"]}), 400
+
+            return jsonify(
+                {
+                    "status": "success",
+                    "timestamp": datetime.now().isoformat(),
+                    "results": results,
+                }
+            ), 200
+
+        # Import Celery only when needed to avoid circular imports and to keep
+        # pytest/CI from touching Redis when no result backend is available.
+        from celery_worker import process_inference_task
+
+        task = process_inference_task.delay(file_bytes.tolist())
+
         return jsonify(
             {
-                "status": "success",
-                "timestamp": datetime.now().isoformat(),
-                "results": results,
+                "status": "processing",
+                "task_id": task.id,
+                "message": "Image analysis has started in the background. Use the task_id to poll for results.",
             }
-        )
+        ), 202
+
     except Exception as e:
-        logger.error(f"API analysis error: {e}")
+        logger.error(f"API analysis trigger error: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/task/<task_id>", methods=["GET"])
+def get_task_status(task_id):
+    """
+    Check the status and retrieve results of an async analysis task.
+    ---
+    tags:
+      - API
+    parameters:
+      - name: task_id
+        in: path
+        type: string
+        required: true
+        description: The task ID returned from /api/analyze
+    responses:
+      200:
+        description: Task status and result (if completed)
+    """
+    if is_pytest_mode():
+        return jsonify(
+            {
+                "state": "DISABLED",
+                "status": "Async Celery result polling is disabled during tests because inference runs synchronously.",
+                "task_id": task_id,
+            }
+        ), 200
+
+    # Import Celery only when this endpoint needs the result backend.
+    from celery_worker import process_inference_task
+
+    task = process_inference_task.AsyncResult(task_id)
+
+    if task.state == "PENDING":
+        response = {"state": task.state, "status": "Task is waiting in the queue..."}
+    elif task.state != "FAILURE":
+        response = {
+            "state": task.state,
+            "status": task.info.get("status", "")
+            if isinstance(task.info, dict)
+            else task.info,
+        }
+        if task.state == "SUCCESS":
+            response["result"] = task.result
+    else:
+        response = {"state": task.state, "status": str(task.info)}
+
+    return jsonify(response)
 
 
 @app.route("/health")

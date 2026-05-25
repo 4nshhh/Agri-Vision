@@ -1212,11 +1212,16 @@ def set_language(lang):
     return redirect(url_for("index", lang=lang))
 
 
-@app.template_filter("datetimeformat")
-def datetimeformat_filter(value):
-    if value == "now":
-        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    return value
+@app.template_filter("i18n")
+def i18n_filter(key):
+    # This filter will be implemented to use the current language stored in session or a global context
+    from flask import request
+    lang = request.cookies.get('lang', 'en')
+    # Load dictionary if not already loaded (for simplicity in this app)
+    import json
+    with open('static/js/i18n.json', 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    return data.get(lang, data['en']).get(key, key)
 
 
 @app.route("/tutorials")

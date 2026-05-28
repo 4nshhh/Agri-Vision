@@ -284,6 +284,34 @@
         </ul>
         {% endif %}
       </div>
+
+      {% if image_b64 and (grad_cam_image_b64 or heatmap_image_path) %}
+      <div class="result-card">
+        <h2 class="results-section-title"><i class="fas fa-brain"></i> Grad-CAM Explainability</h2>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem;">
+          <div>
+            <p style="margin: 0 0 0.5rem; color: var(--text-muted); font-weight: 600;">Original Image</p>
+            <img src="data:image/jpeg;base64,{{ image_b64 }}" alt="Original uploaded crop" class="result-img" />
+          </div>
+          <div>
+            <p style="margin: 0 0 0.5rem; color: var(--text-muted); font-weight: 600;">Grad-CAM Heatmap Overlay</p>
+            {% if heatmap_image_path %}
+            <img src="/{{ heatmap_image_path }}" alt="Grad-CAM heatmap overlay" class="result-img" />
+            {% else %}
+            <img src="data:image/jpeg;base64,{{ grad_cam_image_b64 }}" alt="Grad-CAM heatmap overlay" class="result-img" />
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
+      <div class="agri-leaf-compare-wrap fade-in">
+        <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 1.5rem;">
+          <div>
+            <h2 class="results-section-title" style="margin-top: 0; margin-bottom: 0.2rem;"><i class="fas fa-microscope"></i> Visual Health Comparison</h2>
+            <p style="color: var(--text-muted); font-size: 0.95rem; margin: 0;">
+              Compare the expected healthy appearance with your uploaded crop image.
+            </p>
       
       {% if weather %}
       <div class="weather-card" style="
@@ -494,6 +522,128 @@
         </ul>
       </div>
 
+      <!-- Context-Aware Treatment & Management Guide -->
+      {% set tr = treatment_recommendations|default({}) %}
+      {% if tr and tr.treatment is defined %}
+      <div class="result-card" id="treatment-management-guide">
+        <h2 class="results-section-title">
+          <i class="fas fa-prescription-bottle-medical"></i> Treatment &amp; Management Guide
+        </h2>
+        <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 1.5rem;">
+          Actionable agricultural guidance based on the detected condition
+          {% if tr.disease_name and tr.disease_name != 'unknown' %}
+            — <b>{{ tr.disease_name }}</b>
+          {% endif %}
+        </p>
+
+        {% if tr.confidence_advisory %}
+        <div style="
+            margin-bottom: 1.5rem;
+            padding: 1rem 1.2rem;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #fff3cd, #ffe69c);
+            border-left: 5px solid #ffb703;
+            color: #664d03;
+            font-size: 0.9rem;
+            line-height: 1.6;
+        ">
+          <i class="fas fa-triangle-exclamation"></i>
+          {{ tr.confidence_advisory }}
+        </div>
+        {% endif %}
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.2rem;">
+
+          {% if tr.treatment %}
+          <div style="background: linear-gradient(135deg, rgba(239,68,68,0.05), rgba(239,68,68,0.02)); border: 1px solid rgba(239,68,68,0.15); border-radius: 12px; padding: 1.2rem;">
+            <h3 style="font-size: 1rem; color: #dc3545; margin: 0 0 0.8rem 0;">
+              <i class="fas fa-first-aid"></i> Treatment Suggestions
+            </h3>
+            <ul class="results-list" style="margin: 0; padding-left: 1rem;">
+              {% for item in tr.treatment %}
+              <li style="margin-bottom: 0.4rem; font-size: 0.88rem; line-height: 1.5;">{{ item }}</li>
+              {% endfor %}
+            </ul>
+          </div>
+          {% endif %}
+
+          {% if tr.prevention %}
+          <div style="background: linear-gradient(135deg, rgba(40,167,69,0.05), rgba(40,167,69,0.02)); border: 1px solid rgba(40,167,69,0.15); border-radius: 12px; padding: 1.2rem;">
+            <h3 style="font-size: 1rem; color: #28a745; margin: 0 0 0.8rem 0;">
+              <i class="fas fa-shield-alt"></i> Prevention Tips
+            </h3>
+            <ul class="results-list" style="margin: 0; padding-left: 1rem;">
+              {% for item in tr.prevention %}
+              <li style="margin-bottom: 0.4rem; font-size: 0.88rem; line-height: 1.5;">{{ item }}</li>
+              {% endfor %}
+            </ul>
+          </div>
+          {% endif %}
+
+          {% if tr.irrigation %}
+          <div style="background: linear-gradient(135deg, rgba(52,152,219,0.05), rgba(52,152,219,0.02)); border: 1px solid rgba(52,152,219,0.15); border-radius: 12px; padding: 1.2rem;">
+            <h3 style="font-size: 1rem; color: #3498db; margin: 0 0 0.8rem 0;">
+              <i class="fas fa-tint"></i> Irrigation Guidance
+            </h3>
+            <ul class="results-list" style="margin: 0; padding-left: 1rem;">
+              {% for item in tr.irrigation %}
+              <li style="margin-bottom: 0.4rem; font-size: 0.88rem; line-height: 1.5;">{{ item }}</li>
+              {% endfor %}
+            </ul>
+          </div>
+          {% endif %}
+
+          {% if tr.organic_control %}
+          <div style="background: linear-gradient(135deg, rgba(16,185,129,0.05), rgba(16,185,129,0.02)); border: 1px solid rgba(16,185,129,0.15); border-radius: 12px; padding: 1.2rem;">
+            <h3 style="font-size: 1rem; color: #10b981; margin: 0 0 0.8rem 0;">
+              <i class="fas fa-leaf"></i> Organic Control
+            </h3>
+            <ul class="results-list" style="margin: 0; padding-left: 1rem;">
+              {% for item in tr.organic_control %}
+              <li style="margin-bottom: 0.4rem; font-size: 0.88rem; line-height: 1.5;">{{ item }}</li>
+              {% endfor %}
+            </ul>
+          </div>
+          {% endif %}
+
+          {% if tr.chemical_control %}
+          <div style="background: linear-gradient(135deg, rgba(255,193,7,0.05), rgba(255,193,7,0.02)); border: 1px solid rgba(255,193,7,0.15); border-radius: 12px; padding: 1.2rem;">
+            <h3 style="font-size: 1rem; color: #e67e22; margin: 0 0 0.8rem 0;">
+              <i class="fas fa-flask"></i> Chemical Control
+            </h3>
+            <ul class="results-list" style="margin: 0; padding-left: 1rem;">
+              {% for item in tr.chemical_control %}
+              <li style="margin-bottom: 0.4rem; font-size: 0.88rem; line-height: 1.5;">{{ item }}</li>
+              {% endfor %}
+            </ul>
+          </div>
+          {% endif %}
+
+          {% if tr.severity_advice %}
+          <div style="background: linear-gradient(135deg, rgba(108,117,125,0.05), rgba(108,117,125,0.02)); border: 1px solid rgba(108,117,125,0.15); border-radius: 12px; padding: 1.2rem;">
+            <h3 style="font-size: 1rem; color: #6c757d; margin: 0 0 0.8rem 0;">
+              <i class="fas fa-exclamation-circle"></i> Severity Advice
+            </h3>
+            <ul class="results-list" style="margin: 0; padding-left: 1rem;">
+              {% for item in tr.severity_advice %}
+              <li style="margin-bottom: 0.4rem; font-size: 0.88rem; line-height: 1.5;">{{ item }}</li>
+              {% endfor %}
+            </ul>
+          </div>
+          {% endif %}
+
+        </div>
+
+        {% if tr.is_fallback %}
+        <div style="margin-top: 1.2rem; padding: 0.8rem 1rem; border-radius: 10px; background: rgba(108,117,125,0.08); border: 1px dashed rgba(108,117,125,0.25); font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;">
+          <i class="fas fa-info-circle"></i>
+          These are general agricultural guidelines. For disease-specific recommendations,
+          upload a clearer image or consult a local agricultural extension officer.
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
+
       {% if results.farmer_insights %}
       <div class="result-card">
         <h2 class="results-section-title" data-i18n="res_insights_title">
@@ -630,7 +780,7 @@
         {% endif %}
 
         <!-- Report Export -->
-        <div style="display: flex; justify-content: flex-end; gap: 1rem; border-top: 1px solid var(--card-border); padding-top: 1.5rem; margin-top: 1.5rem;" class="no-print">
+        <div style="display: flex; justify-content: flex-end; gap: 1rem; border-top: 1px solid var(--card-border); padding-top: 1.5rem; margin-top: 1.5rem;">
           <button id="btn-download-explainability-report" onclick="exportExplainabilityReport()" class="upload-btn" style="background: linear-gradient(135deg, var(--deep-forest) 0%, var(--emerald-green) 100%); border: none; box-shadow: 0 4px 12px rgba(16,185,129,0.25);">
             <i class="fas fa-file-pdf"></i> Download Explainability Report
           </button>
@@ -651,7 +801,7 @@
       </div>
 
       <!-- Footer Actions -->
-      <div style="display:flex; justify-content:flex-end; gap:1rem; margin-top:2rem; margin-bottom:2rem;" class="no-print">
+      <div style="display:flex; justify-content:flex-end; gap:1rem; margin-top:2rem; margin-bottom:2rem;">
         <button onclick="readInsights()" class="upload-btn" data-i18n="res_voice" style="padding:0.5rem 1rem; font-size:0.9rem; background:var(--secondary-green);">
           <i class="fas fa-volume-up"></i> Voice Assistant
         </button>
@@ -767,7 +917,7 @@
 
         var deleteBtn = document.createElement("button");
         deleteBtn.type = "button";
-        deleteBtn.className = "agri-scan-history-delete no-print";
+        deleteBtn.className = "agri-scan-history-delete";
         deleteBtn.setAttribute("data-index", index);
         deleteBtn.textContent = "Remove";
         body.appendChild(deleteBtn);
@@ -803,18 +953,19 @@
     }
 
     renderScanHistory();
-  });
+    });
 
+    // PDF Export Functions
 async function exportToPDF() {
   const { jsPDF } = window.jspdf;
   const element = document.querySelector('.results-card');
-  const exportBtn = document.querySelector('button[onclick="exportToPDF()"]');
+  const exportBtn = document.querySelector('button[onclick*="exportToPDF"]') || event.target.closest('button');
   const originalBtnText = exportBtn.innerHTML;
 
   exportBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating PDF...';
   exportBtn.disabled = true;
 
-  // Comprehensive element exclusion for cleaner PDF export
+  // Comprehensive element exclusion for cleaner PDF export (Issue #279)
   const excludeElements = element.querySelectorAll(
     '.no-print, .export-hide, .upload-btn, #toggle-ai-focus, ' +
     '.results-summary, .results-pre, .trail-container, .theme-toggle-btn, ' +
@@ -869,55 +1020,225 @@ async function exportToPDF() {
   }
 }
 
-function exportExplainabilityReport() {
-  window.print();
-}
+    function exportToScreenshotPDF() {
+      const btn = event?.target?.closest('button');
+      if (btn) {
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating screenshot PDF...';
+      }
+
+      try {
+        const element = document.querySelector('.results-card');
+        if (!element) {
+          throw new Error('Results element not found');
+        }
+
+        html2canvas(element, {
+          scale: 2,
+          logging: false,
+          backgroundColor: '#ffffff'
+        }).then(canvas => {
+          const imgData = canvas.toDataURL('image/png');
+          const pdf = new jsPDF({
+            orientation: 'portrait',
+            unit: 'mm',
+            format: 'a4'
+          });
+
+          const imgWidth = 210;
+          const pageHeight = 295;
+          const imgHeight = (canvas.height * imgWidth) / canvas.width;
+          let heightLeft = imgHeight;
+          let position = 0;
+
+          pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+          heightLeft -= pageHeight;
+
+          while (heightLeft >= 0) {
+            position = heightLeft - imgHeight;
+            pdf.addPage();
+            pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+            heightLeft -= pageHeight;
+          }
+
+          pdf.save(`agri_vision_crop_analysis_${new Date().toISOString().split('T')[0]}.pdf`);
+
+          if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-file-pdf"></i> Download PDF Report';
+          }
+          showNotification('Screenshot PDF created successfully!', 'success');
+        }).catch(error => {
+          console.error('Screenshot error:', error);
+          if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-file-pdf"></i> Download PDF Report';
+          }
+          showNotification('Failed to create screenshot PDF', 'error');
+        });
+      } catch (error) {
+        console.error('Error in exportToScreenshotPDF:', error);
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = '<i class="fas fa-file-pdf"></i> Download PDF Report';
+        }
+        showNotification('Error creating PDF', 'error');
+      }
+    }
+
+    function exportExplainabilityReport() {
+      const btn = event.target.closest('button');
+      const originalHTML = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating...';
+
+      try {
+        const element = document.getElementById('explainability-dashboard');
+        if (!element) {
+          throw new Error('Explainability dashboard not found');
+        }
+
+        html2canvas(element, {
+          scale: 2,
+          logging: false,
+          backgroundColor: '#ffffff'
+        }).then(canvas => {
+          const imgData = canvas.toDataURL('image/png');
+          const pdf = new jsPDF({
+            orientation: 'portrait',
+            unit: 'mm',
+            format: 'a4'
+          });
+
+          const imgWidth = 210;
+          const pageHeight = 295;
+          const imgHeight = (canvas.height * imgWidth) / canvas.width;
+          let heightLeft = imgHeight;
+          let position = 0;
+
+          pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+          heightLeft -= pageHeight;
+
+          while (heightLeft >= 0) {
+            position = heightLeft - imgHeight;
+            pdf.addPage();
+            pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+            heightLeft -= pageHeight;
+          }
+
+          pdf.save(`agri_vision_explainability_report_${new Date().toISOString().split('T')[0]}.pdf`);
+
+          btn.disabled = false;
+          btn.innerHTML = originalHTML;
+          showNotification('Explainability report downloaded successfully!', 'success');
+        }).catch(error => {
+          console.error('PDF generation error:', error);
+          btn.disabled = false;
+          btn.innerHTML = originalHTML;
+          showNotification('Error generating explainability PDF', 'error');
+        });
+      } catch (error) {
+        console.error('Error in exportExplainabilityReport:', error);
+        btn.disabled = false;
+        btn.innerHTML = originalHTML;
+        showNotification('Error creating explainability report', 'error');
+      }
+    }
+
+    function showNotification(message, type = 'info') {
+      const notification = document.createElement('div');
+      notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        padding: 12px 20px;
+        background: ${type === 'success' ? '#28a745' : type === 'error' ? '#dc3545' : '#17a2b8'};
+        color: white;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        z-index: 9999;
+        animation: slideIn 0.3s ease;
+        font-size: 14px;
+        font-weight: 500;
+      `;
+      notification.textContent = message;
+      document.body.appendChild(notification);
+
+      setTimeout(() => {
+        notification.style.animation = 'slideOut 0.3s ease';
+        setTimeout(() => notification.remove(), 300);
+      }, 3000);
+    }
+
+    // Add animation styles if not present
+    if (!document.getElementById('notification-styles')) {
+      const style = document.createElement('style');
+      style.id = 'notification-styles';
+      style.textContent = `
+        @keyframes slideIn {
+          from { transform: translateX(400px); opacity: 0; }
+          to { transform: translateX(0); opacity: 1; }
+        }
+        @keyframes slideOut {
+          from { transform: translateX(0); opacity: 1; }
+          to { transform: translateX(400px); opacity: 0; }
+        }
+      `;
+      document.head.appendChild(style);
+    }
+    </script>
 
 function readInsights() {
   var insights = [];
-
   {% if results.farmer_insights %}
   {% for insight in results.farmer_insights %}
   insights.push("{{ insight | replace('"', '\\"') }}");
   {% endfor %}
   {% endif %}
-
-  {% if yield_estimate and yield_estimate.yield_min_acre is not none %}
-  insights.push(
-    "Based on current conditions, your estimated cotton yield is between {{ yield_estimate.yield_min_acre }} and {{ yield_estimate.yield_max_acre }} quintals per acre."
-  );
+  {% if yield_estimate %}
+  insights.push("Based on current conditions, your estimated cotton yield is between {{ yield_estimate.yield_min_acre }} and {{ yield_estimate.yield_max_acre }} quintals per acre.");
   {% endif %}
 
   if (!window.speechSynthesis) {
     alert("Speech synthesis is not supported in this browser.");
     return;
+
+  function exportExplainabilityReport() {
+    window.print();
   }
 
-  window.speechSynthesis.cancel();
+  function readInsights() {
+    var insights = [];
+    {% if results.farmer_insights %}
+    {% for insight in results.farmer_insights %}
+    insights.push("{{ insight | replace('"', '\\"') }}");
+    {% endfor %}
+    {% endif %}
+    {% if results.yield_prediction %}
+    insights.push("Estimated yield is {{ results.yield_prediction.estimated_yield_kg_per_acre }} kilograms per acre.");
+    {% endif %}
 
-  var utterance = new SpeechSynthesisUtterance(
-    "Here are your crop analysis insights. " + insights.join(" ")
-  );
+    if (!window.speechSynthesis) {
+      alert("Speech synthesis is not supported in this browser.");
+      return;
+    }
+    window.speechSynthesis.cancel();
+    var utterance = new SpeechSynthesisUtterance("Here are your crop analysis insights. " + insights.join(" "));
+    window.speechSynthesis.speak(utterance);
+  }
 
-  utterance.rate = 1;
-  utterance.pitch = 1;
-  utterance.volume = 1;
-
-  window.speechSynthesis.speak(utterance);
-}
-
-document.addEventListener("DOMContentLoaded", function () {
-  const cropHistory = JSON.parse(localStorage.getItem("cropHistory")) || [];
-  const scanData = {
-    disease: `{{ disease.detected_issue|default("Unknown") }}`,
-    confidence: `{{ disease.model_confidence|default(0)|float|round(2) }}%`,
-    treatment: `{{ disease_info.get('treatment', 'No treatment available.') }}`,
-    date: `{{ timestamp }}`,
-    image: "data:image/jpeg;base64,{{ image_b64 }}"
-  };
-  cropHistory.unshift(scanData);
-  localStorage.setItem("cropHistory", JSON.stringify(cropHistory));
-});
+  document.addEventListener("DOMContentLoaded", function () {
+      const cropHistory = JSON.parse(localStorage.getItem("cropHistory")) || [];
+      const scanData = {
+          disease: `{{ disease.detected_issue|default("Unknown") }}`,
+          confidence: `{{ disease.model_confidence|default(0)|float|round(2) }}%`,
+          treatment: `{{ disease_info.get('treatment', 'No treatment available.') }}`,
+          date: `{{ timestamp }}`,
+          image: "data:image/jpeg;base64,{{ image_b64 }}"
+      };
+      cropHistory.unshift(scanData);
+      localStorage.setItem("cropHistory", JSON.stringify(cropHistory));
+  });
 </script>
 
 {% endblock %}
+    {% endblock %}

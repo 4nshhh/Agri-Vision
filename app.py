@@ -14,8 +14,11 @@ import threading
 from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 from werkzeug.utils import secure_filename
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from io import BytesIO
 
+import redis
 import base64
 import cv2
 import numpy as np
@@ -44,6 +47,13 @@ from jinja2 import Environment, FileSystemLoader
 from model_registry import registry
 from services.weather_service import generate_weather_recommendations
 from services.yield_service import estimate_yield
+from security_utils import (
+    UploadValidationError,
+    cleanup_temp_upload,
+    resolve_secret_key,
+    save_temp_upload,
+    validate_image_upload,
+)
 
 load_dotenv()
 
@@ -57,28 +67,32 @@ app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///agr
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 # Try dynamic package loading to prevent crash on automated CI testing rigs
+redis_host = os.getenv("REDIS_HOST", "localhost")
+redis_port = int(os.getenv("REDIS_PORT", "6379"))
+redis_db = int(os.getenv("REDIS_DB", "0"))
+limiter_storage_uri = "memory://"
+
 try:
-    redis_host = os.getenv("REDIS_HOST", "localhost")
-    redis_port = int(os.getenv("REDIS_PORT", "6379"))
-    redis_db = int(os.getenv("REDIS_DB", "0"))
-    redis_client = redis.Redis(host=redis_host, port=redis_port, db=redis_db, decode_responses=True)
-    redis_client.ping()
-    logger.info("redis connected for caching and rate limiting")
-    limiter = Limiter(
-        get_remote_address,
-        app=app,
-        storage_uri=f"redis://{redis_host}:{redis_port}",
-        strategy="fixed-window",
+    redis_client = redis.Redis(
+        host=redis_host,
+        port=redis_port,
+        db=redis_db,
+        decode_responses=True,
     )
-except (redis.ConnectionError, ModuleNotFoundError) as err:
+
+    redis_client.ping()
+    limiter_storage_uri = f"redis://{redis_host}:{redis_port}/{redis_db}"
+    logger.info("redis connected for caching and rate limiting")
+except (redis.exceptions.ConnectionError, ModuleNotFoundError) as err:
     logger.warning(f"caching layer bypass active: {err}")
     redis_client = None
 
-    class DummyLimiter:
-        def limit(self, *args, **kwargs):
-            return lambda f: f
-
-    limiter = DummyLimiter()
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    storage_uri=limiter_storage_uri,
+    strategy="fixed-window",
+)
 from models import db
 db.init_app(app)
 
@@ -93,6 +107,17 @@ login_manager.login_message_category = 'info'
 def load_user(user_id):
     from models import User
     return User.query.get(user_id)
+
+from functools import wraps
+
+def api_login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not current_user.is_authenticated:
+            from flask import jsonify
+            return jsonify({"status": "error", "error": "Authentication required"}), 401
+        return f(*args, **kwargs)
+    return decorated
 
 # --- Security Configuration ---
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
@@ -116,15 +141,19 @@ app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 app.jinja_env.auto_reload = True
 app.jinja_env.cache = {}
 
-secret_key = os.getenv("SECRET_KEY")
-if not secret_key:
-    if os.getenv("FLASK_ENV") == "production":
-        logger.critical("SECRET_KEY must be configured in production.")
-        raise SystemExit("SECRET_KEY must be configured in production.")
-    secret_key = "dev_secret_123"
+try:
+    secret_key = resolve_secret_key(os.environ)
+except RuntimeError as exc:
+    logger.critical(str(exc))
+    raise SystemExit(str(exc))
 app.secret_key = secret_key
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
 app.config["MAX_FORM_MEMORY_SIZE"] = 25 * 1024 * 1024
+app.config.setdefault("UPLOAD_MAX_BYTES", app.config["MAX_CONTENT_LENGTH"])
+app.config.setdefault("UPLOAD_RATE_LIMIT", "10 per minute")
+app.config.setdefault("API_UPLOAD_RATE_LIMIT", "20 per minute")
+app.config.setdefault("UPLOAD_TMP_DIR", os.path.join(app.instance_path, "uploads"))
+os.makedirs(app.config["UPLOAD_TMP_DIR"], exist_ok=True)
 
 LANG = {
     "en": {"welcome": "Welcome to Agri Vision"},
@@ -136,6 +165,7 @@ os.makedirs("static/css", exist_ok=True)
 os.makedirs("models", exist_ok=True)
 
 ALLOWED_IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif"}
+ALLOWED_IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/gif"}
 MAX_INFERENCE_DIMENSION = 1024
 DISPLAY_IMAGE_MAX_DIMENSION = 1200
 DISPLAY_JPEG_QUALITY = 80
@@ -681,6 +711,32 @@ def calculate_file_hash(file_storage) -> str:
         sha256_hash.update(byte_block)
     file_storage.seek(0)
     return sha256_hash.hexdigest()
+
+
+def get_upload_max_bytes() -> int:
+    max_bytes = app.config.get("UPLOAD_MAX_BYTES") or app.config.get("MAX_CONTENT_LENGTH")
+    return int(max_bytes or 10 * 1024 * 1024)
+
+
+def enforce_request_size(max_bytes: int) -> None:
+    content_length = request.content_length
+    if content_length is not None and content_length > max_bytes:
+        raise UploadValidationError("File exceeds maximum upload size.", status_code=413)
+
+
+def read_validated_upload_image(file_storage) -> Tuple[str, np.ndarray, np.ndarray, str]:
+    max_bytes = get_upload_max_bytes()
+    safe_filename, file_bytes, _mime = validate_image_upload(
+        file_storage,
+        allowed_extensions=ALLOWED_IMAGE_EXTENSIONS,
+        allowed_mime_types=ALLOWED_IMAGE_MIME_TYPES,
+        max_bytes=max_bytes,
+    )
+    temp_path = save_temp_upload(file_bytes, app.config["UPLOAD_TMP_DIR"], safe_filename)
+    image = cv2.imdecode(np.frombuffer(file_bytes, np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        raise UploadValidationError("Invalid image file.", status_code=400)
+    return safe_filename, image, cv2.cvtColor(image, cv2.COLOR_BGR2RGB), temp_path
 
 
 def read_uploaded_image(file_storage) -> Tuple[str, np.ndarray, np.ndarray]:
@@ -1254,24 +1310,20 @@ def health():
 
 
 @app.route("/analyze", methods=["GET", "POST"])
+@limiter.limit(lambda: app.config.get("UPLOAD_RATE_LIMIT", "10 per minute"))
 @login_required
 def analyze():
     if request.method == "POST":
-        if "file" not in request.files:
-            flash("No file uploaded", "error")
-            return redirect(request.url)
-
-        file = request.files["file"]
-        if file.filename == "":
-            flash("No file selected", "error")
-            return redirect(request.url)
-
-        if not is_allowed_image(file.filename):
-            flash("Invalid file type. Please upload an image (PNG, JPG, JPEG, GIF)", "error")
-            return redirect(request.url)
-
+        temp_path = None
         try:
-            safe_filename, image, image_rgb = read_uploaded_image(file)
+            enforce_request_size(get_upload_max_bytes())
+
+            if "file" not in request.files:
+                flash("No file uploaded", "error")
+                return redirect(request.url)
+
+            file = request.files["file"]
+            safe_filename, image, image_rgb, temp_path = read_validated_upload_image(file)
             compressed_rgb = resize_image(image_rgb, MAX_INFERENCE_DIMENSION)
             results = analyze_image(compressed_rgb)
 
@@ -1312,15 +1364,24 @@ def analyze():
                 heatmap_only_b64=results.get("heatmap_only_b64"),
                 disease_info=disease_info,
             )
+        except UploadValidationError as exc:
+            logger.warning("Upload rejected: %s", exc)
+            if exc.status_code == 413:
+                return ("File too large", 413)
+            flash(str(exc), "error")
+            return redirect(request.url)
         except Exception as exc:
             logger.error("Analysis error: %s", exc)
             flash(f"Error during analysis: {str(exc)}", "error")
             return redirect(request.url)
+        finally:
+            cleanup_temp_upload(temp_path)
 
     return render_template("upload.html")
 
 
 @app.route("/api/explain", methods=["POST"])
+@api_login_required
 def api_explain():
     if "file" not in request.files:
         return jsonify({"status": "error", "error": "No file uploaded"}), 400
@@ -1359,6 +1420,7 @@ def api_explain():
 
 
 @app.route("/comparison", methods=["GET", "POST"])
+@login_required
 def comparison():
     error_message = None
     old_filename, new_filename, old_image, new_image = None, None, None, None
@@ -1650,29 +1712,31 @@ def api_weather():
 
 
 @app.route("/api/analyze", methods=["POST"])
+@limiter.limit(lambda: app.config.get("API_UPLOAD_RATE_LIMIT", "20 per minute"))
 def api_analyze():
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file uploaded'}), 400
-    
-    file = request.files['file']
-    
-    if file.filename == '':
-        return jsonify({'error': 'No file selected'}), 400
+    temp_path = None
     try:
-        file_bytes = np.frombuffer(file.read(), np.uint8)
-        image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-        if image is None:
-            return jsonify({'error': 'Invalid image file'}), 400
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        enforce_request_size(get_upload_max_bytes())
+
+        if "file" not in request.files:
+            return jsonify({"error": "No file uploaded"}), 400
+
+        file = request.files["file"]
+        _safe_filename, image, image_rgb, temp_path = read_validated_upload_image(file)
         results = analyze_image(image_rgb)
         return jsonify({
             "status": "success",
             "timestamp": datetime.now().isoformat(),
-            "results": results
+            "results": results,
         })
+    except UploadValidationError as exc:
+        logger.warning("API upload rejected: %s", exc)
+        return jsonify({"error": str(exc)}), exc.status_code
     except Exception as e:
         logger.error(f"API analysis error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cleanup_temp_upload(temp_path)
 
 
 @app.route("/api/analyze_stream", methods=["POST"])
@@ -1681,33 +1745,44 @@ def api_analyze_stream():
     if 'file' not in request.files:
         return jsonify({'error': 'No file uploaded'}), 400
     file = request.files['file']
+    image_bytes = file.read()
     if file.filename == '':
         return jsonify({'error': 'No file selected'}), 400
     
     def generate():
         try:
-            # Send progress updates
-            yield f"data: {json.dumps({'status': 'uploading', 'progress': 25})}\n\n"
-            
-            file_bytes = np.frombuffer(file.read(), np.uint8)
-            image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+            yield f"data: {json.dumps({'step': 'upload_received', 'progress': 25, 'message': 'Uploading image...'})}\n\n"
+
+            image = cv2.imdecode(
+                np.frombuffer(image_bytes, np.uint8),
+                cv2.IMREAD_COLOR
+            )
+
             if image is None:
-                yield f"data: {json.dumps({'status': 'error', 'message': 'Invalid image file'})}\n\n"
+                yield f"data: {json.dumps({'step': 'error', 'progress': 0, 'message': 'Invalid image file'})}\n\n"
                 return
-            
-            yield f"data: {json.dumps({'status': 'analyzing', 'progress': 50})}\n\n"
-            
+
+            yield f"data: {json.dumps({'step': 'preprocessing', 'progress': 50, 'message': 'Analyzing crop health...'})}\n\n"
+
             image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             results = analyze_image(image_rgb)
-            
-            yield f"data: {json.dumps({'status': 'generating', 'progress': 75})}\n\n"
-            
-            yield f"data: {json.dumps({'status': 'complete', 'progress': 100, 'results': results})}\n\n"
+
+            yield f"data: {json.dumps({'step': 'recommendations', 'progress': 75, 'message': 'Generating prediction...'})}\n\n"
+
+            yield f"data: {json.dumps({'step': 'complete', 'progress': 100, 'message': 'Analysis complete', 'data': results})}\n\n"
+
         except Exception as e:
             logger.error(f"Streaming analysis error: {e}")
-            yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
-    
-    return Response(stream_with_context(generate()), mimetype='text/event-stream')
+            yield f"data: {json.dumps({'step': 'error', 'progress': 0, 'message': str(e)})}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 
 # --- Batch Processing Endpoints ---
@@ -1764,6 +1839,10 @@ def api_batch_upload():
             import numpy as np
             for idx, (filename, image_data) in enumerate(images_data):
                 try:
+                    file.seek(0)
+                    file_bytes = file.read()
+                    image = cv2.imdecode(np.frombuffer(file_bytes, np.uint8), cv2.IMREAD_COLOR)
+
                     file_bytes = np.frombuffer(image_data, np.uint8)
                     image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
                     if image is not None:
@@ -2763,6 +2842,19 @@ def api_report_disease_occurrence():
         logger.error(f"Error reporting disease occurrence: {e}")
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
+
+
+
+@app.route('/analyze_result', methods=['POST'])
+def analyze_result():
+    payload = request.form.get('payload')
+
+    if not payload:
+        return "No analysis data received", 400
+
+    results = json.loads(payload)
+
+    return render_template('results.html', results=results)
 
 
 if __name__ == '__main__':
